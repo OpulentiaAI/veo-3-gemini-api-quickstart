@@ -1,11 +1,4 @@
 import { NextResponse } from "next/server";
-import { GoogleGenAI } from "@google/genai";
-
-if (!process.env.GEMINI_API_KEY) {
-  throw new Error("GEMINI_API_KEY environment variable is not set.");
-}
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function POST(req: Request) {
   try {
@@ -19,12 +12,38 @@ export async function POST(req: Request) {
       );
     }
 
-    // Some SDK versions accept just the name, others expect an operation object.
-    // We'll pass the minimal required shape with a name.
-    const fresh = await ai.operations.getVideosOperation({
-      operation: { name } as unknown as never,
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "Server misconfigured: GEMINI_API_KEY is not set" },
+        { status: 500 }
+      );
+    }
+
+    // Poll operation status via REST to be compatible across SDK versions
+    // The operation name typically looks like: "operations/xxxxxxxx"
+    const url = `https://generativelanguage.googleapis.com/v1beta/${name}`;
+    const resp = await fetch(url, {
+      method: "GET",
+      headers: {
+        "x-goog-api-key": apiKey,
+        Accept: "application/json",
+      },
+      cache: "no-store",
     });
 
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      return NextResponse.json(
+        {
+          error: `Upstream operation poll failed: ${resp.status} ${resp.statusText}`,
+          details: text,
+        },
+        { status: 502 }
+      );
+    }
+
+    const fresh = await resp.json();
     return NextResponse.json(fresh);
   } catch (error) {
     console.error("Error polling operation:", error);
