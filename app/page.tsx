@@ -134,9 +134,12 @@ const VeoStudio: React.FC = () => {
     generatedImage,
   ]);
 
-  // Poll operation until done then download
+  // Poll operation until done then download (with simple failure backoff)
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let consecutiveFailures = 0;
+    const maxFailures = 3;
+
     async function poll() {
       if (!operationName || videoUrl) return;
       try {
@@ -145,29 +148,61 @@ const VeoStudio: React.FC = () => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: operationName }),
         });
-        const fresh = await resp.json();
-        if (fresh?.done) {
-          const fileUri = fresh?.response?.generatedVideos?.[0]?.video?.uri;
-          if (fileUri) {
-            const dl = await fetch("/api/veo/download", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ uri: fileUri }),
-            });
-            const blob = await dl.blob();
-            videoBlobRef.current = blob;
-            const url = URL.createObjectURL(blob);
-            setVideoUrl(url);
-            originalVideoUrlRef.current = url;
+
+        if (!resp.ok) {
+          // Stop early on client errors; backoff on server errors
+          if (resp.status >= 500) {
+            consecutiveFailures += 1;
+            if (consecutiveFailures >= maxFailures) {
+              console.error("Stopping poll after repeated server errors (5xx)");
+              setIsGenerating(false);
+              return;
+            }
+          } else {
+            let errText: string | undefined;
+            try {
+              const errJson = await resp.json();
+              errText = errJson?.error;
+            } catch {}
+            console.error(
+              "Operation poll failed:",
+              resp.status,
+              errText || resp.statusText
+            );
+            setIsGenerating(false);
+            return;
           }
+        } else {
+          const fresh = await resp.json();
+          if (fresh?.done) {
+            const fileUri = fresh?.response?.generatedVideos?.[0]?.video?.uri;
+            if (fileUri) {
+              const dl = await fetch("/api/veo/download", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ uri: fileUri }),
+              });
+              const blob = await dl.blob();
+              videoBlobRef.current = blob;
+              const url = URL.createObjectURL(blob);
+              setVideoUrl(url);
+              originalVideoUrlRef.current = url;
+            }
+            setIsGenerating(false);
+            return;
+          }
+        }
+      } catch (e) {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= maxFailures) {
+          console.error("Stopping poll after repeated network errors", e);
           setIsGenerating(false);
           return;
         }
-      } catch (e) {
-        console.error(e);
-        setIsGenerating(false);
       } finally {
-        timer = setTimeout(poll, POLL_INTERVAL_MS);
+        if (operationName && !videoUrl && isGenerating) {
+          timer = setTimeout(poll, POLL_INTERVAL_MS);
+        }
       }
     }
     if (operationName && !videoUrl) {
@@ -176,7 +211,7 @@ const VeoStudio: React.FC = () => {
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [operationName, videoUrl]);
+  }, [operationName, videoUrl, isGenerating]);
 
   const onPickImage = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];

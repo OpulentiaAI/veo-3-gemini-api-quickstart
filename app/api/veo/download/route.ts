@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 
-if (!process.env.GEMINI_API_KEY) {
-  throw new Error("GEMINI_API_KEY environment variable is not set.");
-}
-
 export async function POST(req: Request) {
   try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "Server misconfigured: GEMINI_API_KEY is not set" },
+        { status: 500 }
+      );
+    }
     const body = await req.json();
     const uri: string | undefined = body?.uri || body?.file?.uri;
 
@@ -15,7 +18,7 @@ export async function POST(req: Request) {
 
     const resp = await fetch(uri, {
       headers: {
-        "x-goog-api-key": process.env.GEMINI_API_KEY as string,
+        "x-goog-api-key": apiKey,
         Accept: "*/*",
       },
       redirect: "follow",
